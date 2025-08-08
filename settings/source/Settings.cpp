@@ -863,7 +863,7 @@ std::map<std::string, std::string> Settings::getEnvVarsFromJson(const Json::Valu
     }
 
     // simple regex for checking and splitting the string
-    const std::regex envVarRegex("(\\w+)=(\\w+)", std::regex_constants::ECMAScript |
+    const std::regex envVarRegex("(\\w+)=(\\S+)", std::regex_constants::ECMAScript |
                                                      std::regex_constants::icase);
 
     // process each entry

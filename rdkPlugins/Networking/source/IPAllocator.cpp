@@ -229,7 +229,7 @@ bool IPAllocator::getContainerIpsFromDisk()
     if (stat(ADDRESS_FILE_DIR, &buf) != 0)
     {
         // Create directory we will store IPs in
-        if (!mUtils->mkdirRecursive(ADDRESS_FILE_DIR, 0644))
+        if (!mUtils->mkdirRecursive(ADDRESS_FILE_DIR, 0755))
         {
             AI_LOG_ERROR_EXIT("Failed to create dir @ '%s'", ADDRESS_FILE_DIR);
             return false;

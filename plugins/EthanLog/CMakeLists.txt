@@ -24,7 +24,7 @@ add_library( EthanLogPlugin
         source/EthanLogPlugin.cpp
         source/EthanLogLoop.cpp
         source/EthanLogClient.cpp
-        $<TARGET_OBJECTS:DobbyPluginCommonLib>
+        source/EthanLogSyslogMessage.cpp
 
         )
 
@@ -34,6 +34,12 @@ target_include_directories( EthanLogPlugin
         $<TARGET_PROPERTY:DobbyPluginCommonLib,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:DobbyDaemonLib,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:AppInfraLogging,INTERFACE_INCLUDE_DIRECTORIES>
+
+        )
+
+target_link_libraries( EthanLogPlugin
+        PRIVATE
+        JsonCpp::JsonCpp
 
         )
 
@@ -47,6 +53,7 @@ set_target_properties( EthanLogPlugin
 
 if (USE_SYSTEMD)
         target_link_libraries( EthanLogPlugin
+                PRIVATE
                 systemd
                 )
 else()

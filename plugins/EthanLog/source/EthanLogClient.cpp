@@ -23,13 +23,9 @@
 
 #include "EthanLogClient.h"
 #include "EthanLogLoop.h"
+#include "EthanLogSyslogMessage.h"
 
 #include <Logging.h>
-
-#define SD_JOURNAL_SUPPRESS_LOCATION
-
-#include <systemd/sd-event.h>
-#include <systemd/sd-journal.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -45,6 +41,7 @@
 // #define ETHANLOG_DEBUG_DUMP
 
 
+using EthanLogMessage = EthanLogSyslogMessage;
 
 // -----------------------------------------------------------------------------
 /**
@@ -77,6 +74,7 @@ EthanLogClient::EthanLogClient(sd_event *loop, ContainerId &&id,
     , mDropped(0)
     , mFirstDropped(std::chrono::steady_clock::time_point::min())
     , mLastDropped(std::chrono::steady_clock::time_point::min())
+    , mDefaultPid(-1)
 {
     AI_LOG_DEBUG("created logging pipe for '%s' with read fd %d",
                  mName.c_str(), mPipeFd);
@@ -84,9 +82,6 @@ EthanLogClient::EthanLogClient(sd_event *loop, ContainerId &&id,
     // create the path to the cgroup.procs file, used to get a list of all pids
     // inside the client container
     mCgroupPidsPath = memCgrpMountPoint + "/" + mContainerId.str() + "/cgroup.procs";
-
-    // set the identifier tag for journald
-    mIdentifier = "SYSLOG_IDENTIFIER=" + mName;
 
     // add the pipe to the event loop
     int rc = sd_event_add_io(loop, &mSource, fd, EPOLLIN,
@@ -131,8 +126,7 @@ void EthanLogClient::setContainerPid(pid_t pid)
         return;
 
     // set the defaults for journald
-    mDefaultSyslogPid = "SYSLOG_PID=" + std::to_string(pid);
-    mDefaultObjectPid = "OBJECT_PID=" + std::to_string(pid);
+    mDefaultPid = pid;
 
     // also we know that within the container that pid will be given the value
     // 1 in the container's pid_namespace, so can add that to the mapping
@@ -214,7 +208,8 @@ int EthanLogClient::pipeFdHandler(uint32_t revents)
                 processLogData();
 
                 // sanity check the message length, shouldn't be needed
-                if (mMsgLen > ETHANLOG_MAX_LOG_MSG_LENGTH) {
+                if (mMsgLen > ETHANLOG_MAX_LOG_MSG_LENGTH)
+                {
                     AI_LOG_ERROR("serious internal error parsing log msg");
                     mMsgLen = 0;
                 }
@@ -345,12 +340,16 @@ bool EthanLogClient::shouldDrop()
         mDropped = 0;
 
         char messageBuf[128];
-        snprintf(messageBuf, sizeof(messageBuf),
-                 "MESSAGE=Dropped %u log messages in last %" PRId64 " seconds (most "
-                 "recently, %" PRId64 " seconds ago) due to excessive rate",
-                 mDropped, firstDropped.count(), lastDropped.count());
+        int len = snprintf(messageBuf, sizeof(messageBuf),
+                           "MESSAGE=Dropped %u log messages in last %" PRId64 " seconds (most "
+                           "recently, %" PRId64 " seconds ago) due to excessive rate",
+                           mDropped, firstDropped.count(), lastDropped.count());
 
-        sd_journal_send("PRIORITY=4", mIdentifier.c_str(), messageBuf, nullptr);
+        EthanLogMessage message;
+        message.processLogLevel("3", 1);
+        message.processIdentifier(mName.c_str(), mName.size());
+        message.processMessage(messageBuf, std::min<ssize_t>(len, sizeof(messageBuf)));
+        message.emit();
     }
 
     return false;
@@ -400,6 +399,7 @@ void EthanLogClient::processLogData()
         FLAG_HAVE_MESSAGE        = (0x1UL << 7)
     };
 
+    EthanLogMessage message;
 
     // if all logging is disabled then just jump out now, no point doing any
     // processing
@@ -408,13 +408,6 @@ void EthanLogClient::processLogData()
         mMsgLen = 0;
         return;
     }
-
-    // fields to pass to journald for logging, the first one is always the
-    // container / app identifier
-    const int maxFields = 16;
-    struct iovec fields[maxFields + 2];
-    fields[0].iov_base = const_cast<char*>(mIdentifier.c_str());
-    fields[0].iov_len = mIdentifier.size();
 
     // get out early if the message is obviously too short (start/stop delims +
     // 4 mandatory fields times 3 minimum characters)
@@ -459,10 +452,9 @@ void EthanLogClient::processLogData()
             // field delimiter.
             *msgEnd++ = '\0';
 
-            // counter of iov fields, we start at 1 because the first one is
-            // always the constant identifier
-            int numFields = 1;
-
+            // clear the message object
+            message.clear();
+            message.processIdentifier(mName.c_str(), mName.size());
 
             char *thisField, *nextField = nullptr;
 
@@ -485,7 +477,7 @@ void EthanLogClient::processLogData()
             int ret = -1;
             unsigned msgFlags = 0;
 
-            while (thisField && (numFields < maxFields))
+            while (thisField)
             {
                 // calculate the size of the data in the field
                 ssize_t fieldLen = nextField ? (nextField - thisField)
@@ -500,14 +492,14 @@ void EthanLogClient::processLogData()
                         case 'L':
                             if (!(msgFlags & FLAG_HAVE_LOG_LEVEL))
                             {
-                                ret = processLogLevel(thisField, fieldLen, &fields[numFields]);
+                                ret = message.processLogLevel(thisField, fieldLen);
                                 msgFlags |= FLAG_HAVE_LOG_LEVEL;
                             }
                             break;
                         case 'T':
                             if (!(msgFlags & FLAG_HAVE_TIMESTAMP))
                             {
-                                ret = processTimestamp(thisField, fieldLen, &fields[numFields]);
+                                ret = message.processTimestamp(thisField, fieldLen);
                                 msgFlags |= FLAG_HAVE_TIMESTAMP;
                             }
                             break;
@@ -517,43 +509,57 @@ void EthanLogClient::processLogData()
                             // to abuse by a client, so disable this on release builds
                             if (!(msgFlags & FLAG_HAVE_PID))
                             {
-                                ret = processPid(thisField, fieldLen, &fields[numFields]);
-                                msgFlags |= FLAG_HAVE_PID;
+                                char *end = nullptr;
+                                long pid = strtol(thisField, &end, 16);
+                                if ((pid > 1) && (pid != LONG_MAX) && (end == (thisField + fieldLen)))
+                                {
+                                    pid = findRealPid(pid);
+                                }
+
+                                if (pid > 0)
+                                {
+                                    ret = message.processPid(pid);
+                                    msgFlags |= FLAG_HAVE_PID;
+                                }
+                                else
+                                {
+                                    ret = 0;
+                                }
                             }
 #endif
                             break;
                         case 'R':
                             if (!(msgFlags & FLAG_HAVE_THREAD))
                             {
-                                ret = processThreadName(thisField, fieldLen, &fields[numFields]);
+                                ret = message.processThreadName(thisField, fieldLen);
                                 msgFlags |= FLAG_HAVE_THREAD;
                             }
                             break;
                         case 'S':
                             if (!(msgFlags & FLAG_HAVE_SRCFILE))
                             {
-                                ret = processCodeFile(thisField, fieldLen, &fields[numFields]);
+                                ret = message.processCodeFile(thisField, fieldLen);
                                 msgFlags |= FLAG_HAVE_SRCFILE;
                             }
                             break;
                         case 'F':
                             if (!(msgFlags & FLAG_HAVE_FUNCTION))
                             {
-                                ret = processCodeFunction(thisField, fieldLen, &fields[numFields]);
+                                ret = message.processCodeFunction(thisField, fieldLen);
                                 msgFlags |= FLAG_HAVE_FUNCTION;
                             }
                             break;
                         case 'N':
                             if (!(msgFlags & FLAG_HAVE_LINENO))
                             {
-                                ret = processCodeLine(thisField, fieldLen, &fields[numFields]);
+                                ret = message.processCodeLine(thisField, fieldLen);
                                 msgFlags |= FLAG_HAVE_LINENO;
                             }
                             break;
                         case 'M':
                             if (!(msgFlags & FLAG_HAVE_MESSAGE))
                             {
-                                ret = processMessage(thisField, fieldLen, &fields[numFields]);
+                                ret = message.processMessage(thisField, fieldLen);
                                 msgFlags |= FLAG_HAVE_MESSAGE;
                             }
                             break;
@@ -566,8 +572,6 @@ void EthanLogClient::processLogData()
 
                     if (ret < 0)
                         break;
-
-                    numFields += ret;
                 }
 
                 thisField = nextField;
@@ -585,33 +589,19 @@ void EthanLogClient::processLogData()
 
             // if no pid was set then ensure we set a default one to stop
             // journald from mistakenly grouping with the dobby service logs
-            if (!(msgFlags & FLAG_HAVE_PID))
+            if (!(msgFlags & FLAG_HAVE_PID) && (mDefaultPid > 0))
             {
-                if (!mDefaultSyslogPid.empty() && (numFields < maxFields))
-                {
-                    fields[numFields].iov_base = const_cast<char*>(mDefaultSyslogPid.data());
-                    fields[numFields].iov_len = mDefaultSyslogPid.length();
-                    numFields++;
-                }
-
-                if (!mDefaultObjectPid.empty() && (numFields < maxFields))
-                {
-                    fields[numFields].iov_base = const_cast<char*>(mDefaultObjectPid.data());
-                    fields[numFields].iov_len = mDefaultObjectPid.length();
-                    numFields++;
-                }
+               message.processPid(mDefaultPid);
             }
 
             // if not aborted and have all the mandatory fields, then send the
             // message to journald
-            if ((ret >= 0) && (numFields > 1))
+             if (ret >= 0)
             {
 #if defined(ETHANLOG_DEBUG_DUMP)
-                dumpMessage(fields, numFields);
+                message.dump();
 #endif
-                int rc = sd_journal_sendv(fields, numFields);
-                if (rc < 0)
-                    AI_LOG_SYS_ERROR(-rc, "failed to write to journald");
+                message.emit();
             }
         }
 
@@ -629,6 +619,7 @@ void EthanLogClient::processLogData()
 
 }
 
+#if 0
 // -----------------------------------------------------------------------------
 /**
  *  @brief Process the log level field
@@ -873,6 +864,9 @@ int EthanLogClient::processCodeFile(const char *field, ssize_t len, struct iovec
     iov->iov_len = 10 + len;
     return 1;
 }
+
+#endif
+
 
 #if (AI_BUILD_TYPE == AI_DEBUG)
 // -----------------------------------------------------------------------------

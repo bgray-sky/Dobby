@@ -18,7 +18,6 @@
 add_library( OpenCDMPlugin
         MODULE
         source/OpenCDMPlugin.cpp
-        $<TARGET_OBJECTS:DobbyPluginCommonLib>
         )
 
 target_include_directories( OpenCDMPlugin
@@ -26,6 +25,11 @@ target_include_directories( OpenCDMPlugin
         $<TARGET_PROPERTY:DobbyPluginCommonLib,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:DobbyDaemonLib,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:AppInfraLogging,INTERFACE_INCLUDE_DIRECTORIES>
+        )
+
+target_link_libraries( OpenCDMPlugin
+        PRIVATE
+        JsonCpp::JsonCpp
         )
 
 set_target_properties( OpenCDMPlugin PROPERTIES

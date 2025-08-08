@@ -32,8 +32,6 @@
 #include <string>
 #include <cstdint>
 
-#include <sys/uio.h>
-
 
 typedef struct sd_event sd_event;
 typedef struct sd_event_source sd_event_source;
@@ -81,16 +79,6 @@ private:
     int pipeFdHandler(uint32_t revents);
 
     void processLogData();
-    int processLogLevel(const char *field, ssize_t len, struct iovec *iov) const;
-#if (AI_BUILD_TYPE == AI_DEBUG)
-    int processPid(const char *field, ssize_t len, struct iovec *iov) const;
-#endif
-    int processTimestamp(const char *field, ssize_t len, struct iovec *iov) const;
-    int processThreadName(const char *field, ssize_t len, struct iovec *iov) const;
-    int processCodeFile(const char *field, ssize_t len, struct iovec *iov) const;
-    int processCodeFunction(const char *field, ssize_t len, struct iovec *iov) const;
-    int processCodeLine(const char *field, ssize_t len, struct iovec *iov) const;
-    int processMessage(const char *field, ssize_t len, struct iovec *iov) const;
 
     bool shouldDrop();
 
@@ -112,8 +100,6 @@ private:
     const unsigned mAllowedLevels;
 
     sd_event_source *mSource;
-
-    std::string mIdentifier;
 
     char mMsgBuf[(MAX_LOG_MSG_LENGTH * 2)];
     size_t mMsgLen;
@@ -141,8 +127,7 @@ private:
     std::chrono::steady_clock::time_point mFirstDropped;
     std::chrono::steady_clock::time_point mLastDropped;
 
-    std::string mDefaultObjectPid;
-    std::string mDefaultSyslogPid;
+    pid_t mDefaultPid;
 
     std::string mCgroupPidsPath;
     mutable std::map<pid_t, pid_t> mNsToRealPidMapping;

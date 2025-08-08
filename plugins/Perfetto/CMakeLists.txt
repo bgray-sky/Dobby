@@ -18,7 +18,6 @@
 add_library( PerfettoPlugin
         MODULE
         source/PerfettoPlugin.cpp
-        $<TARGET_OBJECTS:DobbyPluginCommonLib>
         )
 
 target_include_directories( PerfettoPlugin
@@ -26,6 +25,11 @@ target_include_directories( PerfettoPlugin
         $<TARGET_PROPERTY:DobbyPluginCommonLib,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:DobbyDaemonLib,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:AppInfraLogging,INTERFACE_INCLUDE_DIRECTORIES>
+        )
+
+target_link_libraries( PerfettoPlugin
+        PRIVATE
+        JsonCpp::JsonCpp
         )
 
 set_target_properties( PerfettoPlugin PROPERTIES

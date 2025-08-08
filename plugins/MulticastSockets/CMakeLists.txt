@@ -19,7 +19,6 @@
 add_library( MulticastSocketsPlugin
     MODULE
     source/MulticastSocketsPlugin.cpp
-    $<TARGET_OBJECTS:DobbyPluginCommonLib>
 )
 
 target_include_directories( MulticastSocketsPlugin
@@ -27,6 +26,11 @@ target_include_directories( MulticastSocketsPlugin
     $<TARGET_PROPERTY:DobbyPluginCommonLib,INTERFACE_INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:DobbyDaemonLib,INTERFACE_INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:AppInfraLogging,INTERFACE_INCLUDE_DIRECTORIES>
+)
+
+target_link_libraries( MulticastSocketsPlugin
+    PRIVATE
+    JsonCpp::JsonCpp
 )
 
 set_target_properties( MulticastSocketsPlugin PROPERTIES
